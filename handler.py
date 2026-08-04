@@ -142,3 +142,4 @@ def handler(event):
 
 
 runpod.serverless.start({"handler": handler})
+# rebuild trigger 1785847394

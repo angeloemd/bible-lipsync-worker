@@ -1,17 +1,15 @@
 """
 RunPod serverless handler para LatentSync.
 
-LatentSync sincroniza labios sobre un VIDEO existente + audio nuevo — no
-genera movimiento desde una foto fija por sí solo. Como los avatars del
-proyecto (Sofía/Elías/Samuel) son fotos fijas, si el input es una imagen
-la convertimos primero en un "video" de frame estático (misma duración que
-el audio) con ffmpeg, y LatentSync le sincroniza la boca sobre eso.
-
-Nota de calidad: un frame estático da lip-sync preciso pero sin parpadeo ni
-micro-movimiento de cabeza. Si más adelante se genera un loop corto de
-"idle motion" por avatar (una vez, no por video diario) con Higgsfield,
-pasar ese loop como video_url en vez de image_url sube la calidad notablemente
-sin cambiar nada de este handler.
+LatentSync sincroniza labios sobre un VIDEO existente + audio nuevo. Dos
+modos de base:
+  - video_base64/video_url: un loop corto de "idle motion" del avatar
+    (gesticulando, parpadeando — generado una vez por avatar con Kling 3.0
+    en Higgsfield, no por video diario). Se extiende en bucle (o se recorta)
+    hasta calzar con la duración del audio antes de correr LatentSync.
+  - image_base64/image_url: fallback — foto fija convertida a video de
+    frame estático. Da lip-sync preciso pero sin movimiento de cabeza ni
+    parpadeo (se ve robótico). Usar solo si no hay loop disponible.
 
 Input esperado (event["input"]) — acepta base64 directo (sin hosting externo)
 o URL, lo que sea más práctico según el caso:
@@ -84,6 +82,22 @@ def image_to_static_video(image_path, audio_path, out_path, fps=25):
     return out_path
 
 
+def loop_video_to_duration(video_path, target_duration, out_path, fps=25):
+    """Extiende (en loop) o recorta un video corto de idle-motion para que
+    calce exactamente con la duración del audio narrado, sin audio propio."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1", "-i", video_path,
+            "-t", str(target_duration),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", f"fps={fps}",
+            "-an", out_path,
+        ],
+        check=True, capture_output=True,
+    )
+    return out_path
+
+
 def run_latentsync(video_path, audio_path, out_path):
     subprocess.run(
         [
@@ -115,9 +129,13 @@ def handler(event):
         if not audio_path:
             return {"error": "Falta audio_base64 o audio_url en el input"}
 
-        video_path = resolve_input(job_input, "video_base64", "video_url", os.path.join(work_dir, "base.mp4"))
+        video_path = resolve_input(job_input, "video_base64", "video_url", os.path.join(work_dir, "raw_base.mp4"))
         if video_path:
-            base_video_path = video_path
+            audio_duration = probe_duration_seconds(audio_path)
+            base_video_path = loop_video_to_duration(
+                video_path, audio_duration, os.path.join(work_dir, "base.mp4"),
+                fps=job_input.get("fps", 25),
+            )
         else:
             image_path = resolve_input(job_input, "image_base64", "image_url", os.path.join(work_dir, "image.png"))
             if not image_path:
@@ -142,4 +160,3 @@ def handler(event):
 
 
 runpod.serverless.start({"handler": handler})
-# rebuild trigger 1785847394
